@@ -1,0 +1,2 @@
+trial_id,model_type,LB,UB,solve_time,num_second_stage_vars,precomp_time,build_model_time
+1,segment,-662.3257683051734,-662.3257683051733,9.948598861694336,1187780,0.967716199,32.423043799

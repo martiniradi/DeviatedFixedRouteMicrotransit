@@ -1,0 +1,2 @@
+trial_id,method_variant,LB,UB,solve_time,benders_iterations,num_cuts,num_vars,precomp_time,rootnode_time,MP_time,SP_time,enumeration_time
+1,BFCG,-2645.5493402622587,-2645.549340462259,10.70199990272522,9,855,9322,2.394202,9.57800006866455,0.013883590698242188,10.619999885559082,0.0

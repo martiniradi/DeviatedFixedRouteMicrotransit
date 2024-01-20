@@ -1,0 +1,5 @@
+# This file should have the path of the data directory on your machine as its only line.
+
+# You can then stop git from registering changes with:
+#
+#     git update-index --skip-worktree data-path.txt

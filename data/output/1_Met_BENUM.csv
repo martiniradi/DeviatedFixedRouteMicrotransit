@@ -1,0 +1,2 @@
+trial_id,method_variant,LB,UB,solve_time,benders_iterations,num_cuts,num_vars,precomp_time,rootnode_time,MP_time,SP_time,enumeration_time
+1,BENUM,-2645.549341062259,-2645.549341062259,0.5150001049041748,9,855,39176,17.6687986,0.377000093460083,0.015542984008789062,0.3819999694824219,14.686002492904663

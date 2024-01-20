@@ -1,0 +1,2 @@
+trial_id,model_type,LB,UB,solve_time,num_second_stage_vars,precomp_time,enumeration_time
+1,path,-2645.3448208622594,-2645.3448208622594,5.67186164855957,1267015,54.07188449900001,52.008473511799075
