@@ -1044,3 +1044,316 @@ function out_of_sample_test(inst::InstanceSettingData, xVal, CG::Bool, HEUR::Boo
     println(sol.cost)
     return sol, R, m
 end
+
+"""
+Lazy cut callback implementation (single tree)
+"""
+
+function solveSubproblem(
+    l,
+    t,
+    s, 
+    inst, 
+    R,
+    CG,
+    Heur,
+    all_subpath_graphs,
+    all_load_expanded_graphs,
+    xVal, 
+    zVal, 
+    subproblem,
+    Subpaths, 
+    timelimit
+    )
+
+    @unpack numL, numS, TDmp, TDsp, K, M, δ, Fleet, Theta  = inst
+    @unpack Lines, Num_freq, Demand, Taxi_travel_times, Trip_passengers, Freq_Overlap  = R
+
+    # println("$l, $t, $s")
+    startCG = time()
+    # update RHS with first stage solution
+    set_normalized_rhs(subproblem[:c1], (xVal[l, t])) # + ϵ*x0[l,t]))
+    set_normalized_rhs(subproblem[:c2], (xVal[l, t])) # + ϵ*x0[l,t]))
+    for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
+        if (l_,t_) == (l,t)
+            set_normalized_rhs(subproblem[:c4][p,(l,t)], (zVal[s,p,(l,t)])) # + ϵ*z0[l,t,k,h,s]))
+        end
+    end
+
+    if CG
+        # start CG procedure
+        doneCG = false
+        cgIt = 0        # column generation iterations
+        t0 = Lines[l].ref_stop_time[Lines[l].ref_stop_id[1]][t]
+        while !doneCG
+            cgIt += 1
+            # solve RMP (RMP is the restricted version of SP)
+            optimize!(subproblem)
+            solvetime = solve_time(subproblem)
+            # solveTSP += solvetime
+            if termination_status(subproblem) != MOI.OPTIMAL
+                println("Term status of SP $l $t $s: ", termination_status(subproblem))
+            end
+            objSP = objective_value(subproblem)
+            # println(" CG IT $cgIt, OBJ= ", objSP)
+            # obtain dual solution
+            # d1 = round(dual(subproblems[l][t][s][:c1]), digits=4)
+            # d2 = round(dual(subproblems[l][t][s][:c2]), digits=4)
+            # d3 = round.(dual.(subproblems[l][t][s][:c3]), digits=4)
+            d1 = dual(subproblem[:c1])
+            d2 = dual(subproblem[:c2])
+            d3 = dual.(subproblem[:c3])
+            d4 = dual.(subproblem[:c4])
+            # for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
+            #     if (l_,t_) == (l,t)
+            #         d4[p,(l,t)] = round(d4[p,(l,t)], digits=4)
+            #     end
+            # end
+
+            doneCG = true # we are done unless we find a column with negative reduced cost
+            for i in 1:length(Lines[l].ref_stop_id)-1, j in i+1:min(i + K, length(Lines[l].ref_stop_id))
+                g = all_subpath_graphs[l,s][t][i][j-i]
+                src = Lines[l].ref_stop_id[i]
+                snk = Lines[l].ref_stop_id[j]
+                labels, prev = Heur ? labelSettingAlgInCG(l,t, g, 1, g.order, Lines[l].capacity, d4) : fullLabelSettingAlgInCG(l,t,g, 1, g.order, Lines[l].capacity, d4)
+                # recreate paths
+                paths, labs = getPathsAndLabelsInCG(g.V, 1, labels, prev)
+                t1 = ceil(Int, Dates.value(Dates.Second(R.Lines[l].ref_stop_time[src][t]-t0))/TDsp)
+                t2 = ceil(Int, Dates.value(Dates.Second(R.Lines[l].ref_stop_time[snk][t]-t0))/TDsp)
+                for (idx, label) in enumerate(labs)
+                    WT = sum(label[2]) # total walk + wait time
+                    if WT < LARGE_NUMBER # otherwise it's not a valid path (NOTE: this check should not be necessary)
+                        # compute number of passengers picked up
+                        Q = 0
+                        # total_weighted_delay = 0.
+                        for (orig, time, num) in label[1]
+                            Q += num
+                        end
+                        cost = WT #+ total_weighted_delay - M*Q # the cost of the sub-path
+                        for c in 0:Int(Lines[l].capacity)-Q # add the sub-path for all combinations of "occupancy levels"
+                            count = length(Subpaths[l][t][s].all) # id of the sub-path (also helps keep count)
+                            node1 = all_load_expanded_graphs[l][t].p2n[i, t1+1, c+1]   # find tail node in SP
+                            node2 = all_load_expanded_graphs[l][t].p2n[j, t2+1, c+Q+1] # find head node in SP
+                            # compute reduced cost
+                            rc = label[3] - d3[node1] + d3[node2] # reduced cost fom lab setting alg + dual source and sink
+                            if rc < -0.001
+                                count += 1
+                                doneCG = false # if negative reduced cost, we have not found the LP optimal solution yet
+                                subP = SubPath(count, cost, Q, label[1], paths[idx], node1, node2)
+                                # add sub-path object to pool
+                                push!(Subpaths[l][t][s].all, subP)
+                                push!(Subpaths[l][t][s].in[node2], count)
+                                push!(Subpaths[l][t][s].out[node1], count)
+                                for (k, h, num) in label[1]
+                                    push!(Subpaths[l][t][s].pax[k, h], count)
+                                end
+                                # add column to subproblem
+                                addSubPath!(R, l,t,s, subproblem, subP, node1, node2)
+                            end
+
+                        end
+                    end
+                end
+            end
+            # if we are done add objective value and generate Benders cut
+            if doneCG
+                return objSP, d1, d2, d4
+            elseif time() - startCG > timelimit
+                return objSP, d1, d2, d4
+            end
+        end
+    else
+        # solve SP
+        optimize!(subproblem)
+        # solvetime = solve_time(SP[l][t][s])
+        # solveTSP += solvetime
+        objSP = objective_value(subproblem)
+        push!(objSPS[s], objSP)
+        if true #objSP > thetaVal[l, t, s] + 0.001
+            return objSP, d1, d2, d4
+        end
+    end
+    return -1
+end
+function runAlgWithLazyCuts(
+    R::RouteSettingData,
+    inst::InstanceSettingData,
+    Subpaths::Vector{Vector{Vector{Pool}}},                # pool of sub-paths (precomputed)
+    all_subpath_graphs::Array{Vector{Vector{Vector{TEN}}},2},      # pool of time-expanded networks (used to generate sub-paths)
+    all_load_expanded_graphs::Vector{Vector{TSLGraph}},              # pool of time-space-load networks (used to add sub-paths in the sub-problem)
+    CG::Bool,      # solve second-stage with column generation
+    # PO::Bool,      # add pareto-optimal cuts
+    Heur::Bool,    # heuristic CG or not
+    normalized::Bool,
+    num_focus::Int64=NUM_FOCUS,
+    num_threads::Int=NUM_THREADS,
+    mip_gap::Float64=MIP_GAP,
+    timelimit::Int=MP_TIME_LIMIT, # time limit for the algorithm execution
+    )
+    @unpack numL, numS, TDmp, TDsp, K, M, δ, Fleet, Theta  = inst
+    @unpack Lines, Num_freq, Demand, Taxi_travel_times, Trip_passengers, Freq_Overlap  = R
+
+    MP = JuMP.Model(JuMP.optimizer_with_attributes(() -> Gurobi.Optimizer(GUROBI_ENV), "TimeLimit" => timelimit, "MIPGap" => mip_gap, "Threads" => num_threads, "OutputFlag" => 0, "NumericFocus" => num_focus #=, "Method" => 1 "FeasibilityTol" => 1e-8=#)) # "Cuts" => 3
+
+    JuMP.@variables MP begin
+        # if passenger p is assigned to trip (l,t) in scenario s
+        z[s in 1:numS, p in eachindex(Demand[s]), (l,t) in Demand[s][p].candidateTrips], Bin                             
+        # if line l operates at frequency t
+        x[l in 1:numL, eachindex(R.Lines[l].freq)], Bin
+        # recourse for line l, freq t, and scenario s
+        theta[l in 1:numL, eachindex(R.Lines[l].freq), 1:numS]
+    end
+
+    JuMP.@expression(MP,
+        first_stage_costs,
+        sum( WEIGHT_LINE_COST*R.Lines[l].cost * x[l, t] for l in 1:numL, t in eachindex(R.Lines[l].freq))
+    )
+
+    JuMP.@expression(MP,
+        second_stage_costs,
+        sum(R.Pi[s] * theta[l,t,s] for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS)
+    )
+
+    JuMP.@objective(MP, Min,
+        first_stage_costs +
+        second_stage_costs
+    )
+
+    JuMP.@constraints MP begin
+        fleet[t in 1:Num_freq], sum(x[l, t_] for l in 1:numL, t_ in Freq_Overlap[l,t]) <= Fleet
+        cover[s in 1:numS, p in eachindex(Demand[s])], sum(z[s,p,(l,t)] for (l,t) in Demand[s][p].candidateTrips) <= 1
+        minLoad[l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS], sum(Demand[s][p].num*z[s,p,(l,t)] for p in Trip_passengers[l,t,s]) >= (1 - Theta)R.Lines[l].capacity*x[l, t]
+        maxLoad[l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS], sum(Demand[s][p].num*z[s,p,(l,t)] for p in Trip_passengers[l,t,s]) <= (1 + Theta)R.Lines[l].capacity*x[l, t]
+
+        recourse[l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS], theta[l,t,s] >= -LARGE_NUMBER
+    end
+
+
+    # build second stage models (with all sub-paths in SPs)
+    subproblems = [[[buildGenericSecondStage(R, Subpaths[l][t][s], inst, l,t,s, MP_TIME_LIMIT, MIP_GAP, NUM_THREADS, num_focus) for s in 1:numS] for t in eachindex(R.Lines[l].freq)] for l in 1:numL]
+
+    done = false
+    LB = typemin(Float64)       # lower bound
+    UB = typemax(Float64)       # upper bound
+    # LBs = Vector{Float64}()     # lower bounds at each iteration
+    # UBs = Vector{Float64}()     # upper bounds at each iteration
+    # cuts = ConstraintRef[]      # pool of Benders cuts
+    num_cuts = 0
+    it = 0                      # iteration counter
+    RNtime = 0.               # time spent solving the root node
+    solveTMP = 0.0              # time spent in MP
+    # MPtimes = Vector{Float64}()
+    solveTSP = 0.0              # time spent in SP
+    FScosts = 0.0               # first-stage costs (0)
+    SScosts = 0.0               # second stage costs
+    sol = Sol(numS)   # initialize solution
+    num_second_stage_vars = 0
+    # numCols = Vector{Int}([sum(length(SPs[l,t][s].all) for l in 1:numL, t in 1:T, s in 1:numS)])
+    # numCuts = Vector{Int}([length(cuts)])
+
+    # settings for the PO cuts
+    # # q0, x0, z0, t0 = core_point(R)  # core point of MP
+    # local x0
+    # local z0
+    # ϵ = 0.
+    # λ = 0.5
+    # if PO
+    #     ϵ = EPS                   # epsilon tolerance (for PO cuts). It needs to be ϵ <= MIP_GAP (to assume equivalent solutions of SP)
+    # end
+
+    startT = time()             # algorithm time tracker
+
+    
+    function my_callback_function(cb_data)
+        # @unpack S, B, L, Lines, ODlines, TransitODs, F, Trips,  D, Cb, Pi, Horizon, OD = inst
+        # status = callback_node_status(cb_data, m)
+        # if status == MOI.CALLBACK_NODE_STATUS_FRACTIONAL
+        #     # `callback_value(cb_data, x)` is not integer (to some tolerance).
+        #     # If, for example, your lazy constraint generator requires an
+        #     # integer-feasible primal solution, you can add a `return` here.
+        #     # return
+        # elseif status == MOI.CALLBACK_NODE_STATUS_INTEGER
+        #     # `callback_value(cb_data, x)` is integer (to some tolerance).
+        # else
+        #     @assert status == MOI.CALLBACK_NODE_STATUS_UNKNOWN
+        #     # `callback_value(cb_data, x)` might be fractional or integer.
+        # end
+        # add colgen code here
+        x_k = callback_value.(cb_data, x)
+        z_k = callback_value.(cb_data, z)
+        theta_k = callback_value.(cb_data, theta)
+
+        for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
+
+            objSP, d1, d2, d4 = solveSubproblem(l,t,s, inst, R, CG, Heur, all_subpath_graphs, all_load_expanded_graphs, x_k, z_k, subproblems[l][t][s], Subpaths, timelimit)
+            
+            if !Heur || (Heur && objSP > theta_k[l,t,s] + EPS)
+                cRef = @build_constraint(round(d1 + d2, digits=6) * MP[:x][l, t] + sum(round(d4[p,(l,t)], digits=6) * MP[:z][s,p,(l, t)] for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips if (l_,t_) == (l,t)) <= MP[:theta][l, t, s])
+                # push!(cuts, cRef)
+                num_cuts += 1
+                JuMP.MOI.submit(MP, MOI.LazyConstraint(cb_data), cRef)
+            end
+        end
+        return
+    end
+
+    MOI.set(MP, MOI.LazyConstraintCallback(), my_callback_function)
+    # return m
+
+    optimize!(MP)
+    # check if solution found (optimal or not)
+    if termination_status(MP) != MOI.OPTIMAL
+        println("Term status of MP: ", termination_status(MP))
+    end
+    LB = objective_bound(MP)
+    # check if we have a solution 
+    if has_values(MP)
+        # UB = objective_value(m)
+        sol.cost = value(MP[:first_stage_costs])
+        #solve the integer subproblems
+        xVal = value.(MP[:x])               # first stage X vars
+        zVal = value.(MP[:z])               # first stage Z vars
+        for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
+            # set back RHS just in case
+            set_normalized_rhs(subproblems[l][t][s][:c1], xVal[l, t])
+            set_normalized_rhs(subproblems[l][t][s][:c2], xVal[l, t])
+            num_second_stage_vars += length(Subpaths[l][t][s].all)
+            for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
+                if (l_,t_) == (l,t)
+                    set_normalized_rhs(subproblems[l][t][s][:c4][p,(l,t)], zVal[s,p,(l,t)])
+                end
+            end
+            set_binary.(subproblems[l][t][s][:y]) # second-stage variables as binary
+            optimize!(subproblems[l][t][s])
+            if has_values(subproblems[l][t][s])
+                # addSubproblemSol!(m, subproblems[l][t][s], sol, xVal[l,t], l,t,s, R, Inst, Subpaths[l][t][s], subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs)
+                objSP = objective_value(subproblems[l][t][s])
+                sol.cost += R.Pi[s]*objSP   # objective is second-stage costs
+            else
+                objSP = typemax(Float64)
+                sol.cost += R.Pi[s]*objSP
+            end
+            # for (id, a) in enumerate(Subpaths[l][t][s].all)
+            #     if value(subproblem[l][t][s][:y][a.id]) > 0.999
+            #         @unpack c, Q, W = Subpaths[l][t][s].all[id]
+            #         # sol.PaxServed += Q
+            #         # sol.TotalTime += W
+            #         # push!(sol.paths[l,t,s], a)
+            #         # for (i,h) in a.O
+            #         #     println(i,", ",h, " by ", l, " t ",t," in s ", s)
+            #         # end
+            #     end
+            # end
+            # numSPs += length(SPs[l,t][s].all)
+        end
+    end
+    # plotAlgRun(LBs, UBs, MPtimes, numCuts, numCols)
+    totT = time() - startT # stop algorithm time
+    println("ALG TIME: ", totT)
+    # println(" MP time: ", solveTMP)
+    # println( "SP+CG time: ", solveTSP)
+    println("IT $it, LB = $LB, IP(UB) = $(sol.cost), numCuts = ", num_cuts, " TOTAL T: ", totT)
+    return LB, sol.cost, totT, num_cuts #, num_second_stage_vars, RNtime, solveTMP, solveTSP, xVal
+
+end
+

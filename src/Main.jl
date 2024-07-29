@@ -39,4 +39,5 @@ module Microtransit
     include("path_benchmark.jl")    # this file contains everything related to the path-based model
     include("segment_benchmark.jl") # this file contains everything related to the segment-based model
     include("dar.jl")               # this file contains all the functions adapted to the MiND-DAR model
+
 end
