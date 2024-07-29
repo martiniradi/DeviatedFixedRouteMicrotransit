@@ -1279,9 +1279,9 @@ function runAlgWithLazyCuts(
         #     # `callback_value(cb_data, x)` might be fractional or integer.
         # end
         # add colgen code here
-        x_k = callback_value.(cb_data, x)
-        z_k = callback_value.(cb_data, z)
-        theta_k = callback_value.(cb_data, theta)
+        x_k = callback_value.(cb_data, MP[:x])
+        z_k = callback_value.(cb_data, MP[:z])
+        theta_k = callback_value.(cb_data, MP[:theta])
 
         for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
 
@@ -1317,7 +1317,7 @@ function runAlgWithLazyCuts(
             # set back RHS just in case
             set_normalized_rhs(subproblems[l][t][s][:c1], xVal[l, t])
             set_normalized_rhs(subproblems[l][t][s][:c2], xVal[l, t])
-            num_second_stage_vars += length(Subpaths[l][t][s].all)
+            # num_second_stage_vars += length(Subpaths[l][t][s].all)
             for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
                 if (l_,t_) == (l,t)
                     set_normalized_rhs(subproblems[l][t][s][:c4][p,(l,t)], zVal[s,p,(l,t)])
