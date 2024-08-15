@@ -25,7 +25,7 @@ include(joinpath(@__DIR__, "solution.jl"))
 include(joinpath(@__DIR__, "algorithm.jl"))
 
 """
-In-sample solutions for a method variant (Single-tree: Benders + Heur. CG)
+In-sample solutions for a method variant (Single-tree: Benders + Full enumeration)
 
 File outline:
 
@@ -93,25 +93,25 @@ end
 function main()
     # instantiate
     output_dir, numL, demT, numS, capacity, maxDev, maxWalk, trial_id, fleet_size, K, max_sch_dev = parse_trial_info()
-    ioStream = open(joinpath(output_dir, string(trial_id) * "_MetST_BHCG.csv"), "w")
+    ioStream = open(joinpath(output_dir, string(trial_id) * "_MetST_Benders.csv"), "w")
     write(ioStream, join(["trial_id", "method_variant", "LB", "UB", "solve_time", "pre-process_time", "num_cuts", "num_sols", "num_solved", "post-process_time"], ",") * "\n")
 
     # dummy compilation run
     inst = InstanceSettingData(2, 1800, 2, TRAIN, collect(1:2), 1,OPERATIONAL_HORIZON,REFNUM,TIME_DISC_MP,TIME_DISC_SP,500.,10,210.,MAX_WAITING_SECONDS,max_sch_dev,10, THETA, WEIGHT_COVERAGE,WEIGHT_WALK,WEIGHT_WAIT,WEIGHT_INVEHICLE,WEIGHT_DELAY,SPEED_FACTOR,REF_SPEED_FACTOR)
     R, m = buildRouteSettingData(inst);    
-    (all_subpaths, subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs, enumeration_time), precomp_time_sp = @timed generateSubPathSet(m, R, inst, CG, !TRANSIT);
-    _, _, _, _, _, _, _ = runAlgWithLazyCuts(R,inst, all_subpaths, all_subpath_graphs, all_load_expanded_graphs, CG, HEUR, NORMALIZED)
+    (all_subpaths, subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs, enumeration_time), precomp_time_sp = @timed generateSubPathSet(m, R, inst, !CG, !TRANSIT);
+    _, _, _, _, _, _, _ = runAlgWithLazyCuts(R,inst, all_subpaths, all_subpath_graphs, all_load_expanded_graphs, !CG, !HEUR, NORMALIZED)
 
 
     inst = InstanceSettingData(numL, demT, numS, TRAIN, collect(1:numS), K,OPERATIONAL_HORIZON,REFNUM,TIME_DISC_MP,TIME_DISC_SP,maxDev,capacity,maxWalk,MAX_WAITING_SECONDS,max_sch_dev,fleet_size, THETA, WEIGHT_COVERAGE,WEIGHT_WALK,WEIGHT_WAIT,WEIGHT_INVEHICLE,WEIGHT_DELAY,SPEED_FACTOR,REF_SPEED_FACTOR)
     R, m = buildRouteSettingData(inst);
 
-    #--- Benders + Heuristic CG method (CG, HEUR)
+    #--- Benders + Full CG method (CG, HEUR)
     
-    (all_subpaths, subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs, enumeration_time), precomp_time_sp = @timed generateSubPathSet(m, R, inst, CG, !TRANSIT);
-    LB, UB, alg_time, num_cuts, numSols, numSolved, timePost = runAlgWithLazyCuts(R,inst, all_subpaths, all_subpath_graphs, all_load_expanded_graphs, CG, HEUR, NORMALIZED)
+    (all_subpaths, subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs, enumeration_time), precomp_time_sp = @timed generateSubPathSet(m, R, inst, !CG, !TRANSIT);
+    LB, UB, alg_time, num_cuts, numSols, numSolved, timePost = runAlgWithLazyCuts(R,inst, all_subpaths, all_subpath_graphs, all_load_expanded_graphs, !CG, !HEUR, NORMALIZED)
     
-    write(ioStream, join([trial_id, "BHCG", LB, UB, alg_time, precomp_time_sp, num_cuts, numSols, numSolved, timePost], ",") * "\n")
+    write(ioStream, join([trial_id, "Benders", LB, UB, alg_time, precomp_time_sp, num_cuts, numSols, numSolved, timePost], ",") * "\n")
 
     close(ioStream)
 

@@ -1072,11 +1072,11 @@ function solveSubproblem(
     # println("$l, $t, $s")
     startCG = time()
     # update RHS with first stage solution
-    set_normalized_rhs(subproblem[:c1], (xVal[l, t])) # + ϵ*x0[l,t]))
-    set_normalized_rhs(subproblem[:c2], (xVal[l, t])) # + ϵ*x0[l,t]))
+    set_normalized_rhs(subproblem[:c1], (xVal[l,t])) # + ϵ*x0[l,t]))
+    set_normalized_rhs(subproblem[:c2], (xVal[l,t])) # + ϵ*x0[l,t]))
     for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
         if (l_,t_) == (l,t)
-            set_normalized_rhs(subproblem[:c4][p,(l,t)], (zVal[s,p,(l,t)])) # + ϵ*z0[l,t,k,h,s]))
+            set_normalized_rhs(subproblem[:c4][p,(l,t)], (zVal[s,p,(l_,t_)])) # + ϵ*z0[l,t,k,h,s]))
         end
     end
 
@@ -1165,10 +1165,13 @@ function solveSubproblem(
     else
         # solve SP
         optimize!(subproblem)
+        d1 = dual(subproblem[:c1])
+        d2 = dual(subproblem[:c2])
+        d4 = dual.(subproblem[:c4])
         # solvetime = solve_time(SP[l][t][s])
         # solveTSP += solvetime
         objSP = objective_value(subproblem)
-        push!(objSPS[s], objSP)
+        # push!(objSPS[s], objSP)
         if true #objSP > thetaVal[l, t, s] + 0.001
             return objSP, d1, d2, d4
         end
@@ -1263,25 +1266,44 @@ function runAlgWithLazyCuts(
 
     startT = time()             # algorithm time tracker
 
+
+    #info about intermediate solutions
+    xSols = []
+    zSols = []
+    lbSols = Vector{Float64}()
+    fsSols = Vector{Float64}()
     
     function my_callback_function(cb_data)
         # @unpack S, B, L, Lines, ODlines, TransitODs, F, Trips,  D, Cb, Pi, Horizon, OD = inst
-        # status = callback_node_status(cb_data, m)
-        # if status == MOI.CALLBACK_NODE_STATUS_FRACTIONAL
-        #     # `callback_value(cb_data, x)` is not integer (to some tolerance).
-        #     # If, for example, your lazy constraint generator requires an
-        #     # integer-feasible primal solution, you can add a `return` here.
-        #     # return
-        # elseif status == MOI.CALLBACK_NODE_STATUS_INTEGER
-        #     # `callback_value(cb_data, x)` is integer (to some tolerance).
-        # else
-        #     @assert status == MOI.CALLBACK_NODE_STATUS_UNKNOWN
-        #     # `callback_value(cb_data, x)` might be fractional or integer.
-        # end
+        
         # add colgen code here
         x_k = callback_value.(cb_data, MP[:x])
         z_k = callback_value.(cb_data, MP[:z])
         theta_k = callback_value.(cb_data, MP[:theta])
+        
+        status = callback_node_status(cb_data, MP)
+        if status == MOI.CALLBACK_NODE_STATUS_FRACTIONAL
+            # `callback_value(cb_data, x)` is not integer (to some tolerance).
+            # If, for example, your lazy constraint generator requires an
+            # integer-feasible primal solution, you can add a `return` here.
+            # return
+        elseif status == MOI.CALLBACK_NODE_STATUS_INTEGER
+            # `callback_value(cb_data, x)` is integer (to some tolerance).
+            #TODO Save intermediate solution
+            push!(xSols, x_k)
+            push!(zSols, z_k)
+            fsCost = callback_value(cb_data, MP[:first_stage_costs])
+            ssCost = callback_value(cb_data, MP[:second_stage_costs])
+            push!(lbSols, fsCost + ssCost)
+            push!(fsSols, fsCost)
+        else
+            @assert status == MOI.CALLBACK_NODE_STATUS_UNKNOWN
+            # `callback_value(cb_data, x)` might be fractional or integer.
+        end
+
+        # x_k = [[callback_value(cb_data, MP[:x][l,t]) for t in eachindex(R.Lines[l].freq)] for l in 1:numL]
+        # z_k = [[[callback_value(cb_data, MP[:z][s,p,Demand[s][p].candidateTrips[idx]]) for idx in eachindex(Demand[s][p].candidateTrips)] for p in eachindex(Demand[s])] for s in 1:numS]
+        # theta_k = [[[callback_value(cb_data, MP[:theta][l,t,s]) for s in 1:numS] for t in eachindex(R.Lines[l].freq)] for l in 1:numL]
 
         for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
 
@@ -1305,55 +1327,96 @@ function runAlgWithLazyCuts(
     if termination_status(MP) != MOI.OPTIMAL
         println("Term status of MP: ", termination_status(MP))
     end
+    
     LB = objective_bound(MP)
-    # check if we have a solution 
-    if has_values(MP)
-        # UB = objective_value(m)
-        sol.cost = value(MP[:first_stage_costs])
-        #solve the integer subproblems
-        xVal = value.(MP[:x])               # first stage X vars
-        zVal = value.(MP[:z])               # first stage Z vars
-        for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
-            # set back RHS just in case
-            set_normalized_rhs(subproblems[l][t][s][:c1], xVal[l, t])
-            set_normalized_rhs(subproblems[l][t][s][:c2], xVal[l, t])
-            # num_second_stage_vars += length(Subpaths[l][t][s].all)
-            for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
-                if (l_,t_) == (l,t)
-                    set_normalized_rhs(subproblems[l][t][s][:c4][p,(l,t)], zVal[s,p,(l,t)])
+    # check if we have solutions
+    println(length(lbSols), " intermediate solutions")
+    solvedSols = 0
+    postStartTime = time()
+    if length(lbSols) > EPS
+        # sort solutions by increasing lower bound
+        solOrder = sortperm(lbSols)
+        for idx in solOrder
+            if lbSols[idx] < UB - EPS
+                solvedSols += 1
+                # UB = objective_value(m)
+                objTOT = fsSols[idx]
+                #solve the integer subproblems
+                for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
+                    # set back RHS just in case
+                    set_normalized_rhs(subproblems[l][t][s][:c1], xSols[idx][l, t])
+                    set_normalized_rhs(subproblems[l][t][s][:c2], xSols[idx][l, t])
+                    # num_second_stage_vars += length(Subpaths[l][t][s].all)
+                    for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
+                        if (l_,t_) == (l,t)
+                            set_normalized_rhs(subproblems[l][t][s][:c4][p,(l,t)], zSols[idx][s,p,(l,t)])
+                        end
+                    end
+                    set_binary.(subproblems[l][t][s][:y]) # second-stage variables as binary
+                    optimize!(subproblems[l][t][s])
+                    if has_values(subproblems[l][t][s])
+                        # addSubproblemSol!(m, subproblems[l][t][s], sol, xVal[l,t], l,t,s, R, Inst, Subpaths[l][t][s], subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs)
+                        objSP = objective_value(subproblems[l][t][s])
+                        objTOT += R.Pi[s]*objSP   # objective is second-stage costs
+                    else
+                        objSP = typemax(Float64)
+                        objTOT += R.Pi[s]*objSP
+                    end
                 end
+                # println("SOL ", idx, " obj: ", objTOT)
+                UB = objTOT < UB - EPS ? objTOT : UB
             end
-            set_binary.(subproblems[l][t][s][:y]) # second-stage variables as binary
-            optimize!(subproblems[l][t][s])
-            if has_values(subproblems[l][t][s])
-                # addSubproblemSol!(m, subproblems[l][t][s], sol, xVal[l,t], l,t,s, R, Inst, Subpaths[l][t][s], subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs)
-                objSP = objective_value(subproblems[l][t][s])
-                sol.cost += R.Pi[s]*objSP   # objective is second-stage costs
-            else
-                objSP = typemax(Float64)
-                sol.cost += R.Pi[s]*objSP
-            end
-            # for (id, a) in enumerate(Subpaths[l][t][s].all)
-            #     if value(subproblem[l][t][s][:y][a.id]) > 0.999
-            #         @unpack c, Q, W = Subpaths[l][t][s].all[id]
-            #         # sol.PaxServed += Q
-            #         # sol.TotalTime += W
-            #         # push!(sol.paths[l,t,s], a)
-            #         # for (i,h) in a.O
-            #         #     println(i,", ",h, " by ", l, " t ",t," in s ", s)
-            #         # end
-            #     end
-            # end
-            # numSPs += length(SPs[l,t][s].all)
         end
     end
+    postTime = time() - postStartTime
+    println(solvedSols, " solved")
+    # if has_values(MP)
+    #     # UB = objective_value(m)
+    #     sol.cost = value(MP[:first_stage_costs])
+    #     #solve the integer subproblems
+    #     xVal = value.(MP[:x])               # first stage X vars
+    #     zVal = value.(MP[:z])               # first stage Z vars
+    #     for l in 1:numL, t in eachindex(R.Lines[l].freq), s in 1:numS
+    #         # set back RHS just in case
+    #         set_normalized_rhs(subproblems[l][t][s][:c1], xVal[l, t])
+    #         set_normalized_rhs(subproblems[l][t][s][:c2], xVal[l, t])
+    #         # num_second_stage_vars += length(Subpaths[l][t][s].all)
+    #         for p in eachindex(Demand[s]), (l_,t_) in Demand[s][p].candidateTrips
+    #             if (l_,t_) == (l,t)
+    #                 set_normalized_rhs(subproblems[l][t][s][:c4][p,(l,t)], zVal[s,p,(l,t)])
+    #             end
+    #         end
+    #         set_binary.(subproblems[l][t][s][:y]) # second-stage variables as binary
+    #         optimize!(subproblems[l][t][s])
+    #         if has_values(subproblems[l][t][s])
+    #             # addSubproblemSol!(m, subproblems[l][t][s], sol, xVal[l,t], l,t,s, R, Inst, Subpaths[l][t][s], subpath_road_networks, all_load_expanded_graphs, all_subpath_graphs)
+    #             objSP = objective_value(subproblems[l][t][s])
+    #             sol.cost += R.Pi[s]*objSP   # objective is second-stage costs
+    #         else
+    #             objSP = typemax(Float64)
+    #             sol.cost += R.Pi[s]*objSP
+    #         end
+    #         # for (id, a) in enumerate(Subpaths[l][t][s].all)
+    #         #     if value(subproblem[l][t][s][:y][a.id]) > 0.999
+    #         #         @unpack c, Q, W = Subpaths[l][t][s].all[id]
+    #         #         # sol.PaxServed += Q
+    #         #         # sol.TotalTime += W
+    #         #         # push!(sol.paths[l,t,s], a)
+    #         #         # for (i,h) in a.O
+    #         #         #     println(i,", ",h, " by ", l, " t ",t," in s ", s)
+    #         #         # end
+    #         #     end
+    #         # end
+    #         # numSPs += length(SPs[l,t][s].all)
+    #     end
+    # end
     # plotAlgRun(LBs, UBs, MPtimes, numCuts, numCols)
     totT = time() - startT # stop algorithm time
     println("ALG TIME: ", totT)
     # println(" MP time: ", solveTMP)
     # println( "SP+CG time: ", solveTSP)
-    println("IT $it, LB = $LB, IP(UB) = $(sol.cost), numCuts = ", num_cuts, " TOTAL T: ", totT)
-    return LB, sol.cost, totT, num_cuts #, num_second_stage_vars, RNtime, solveTMP, solveTSP, xVal
+    println("IT $it, LB = $LB, IP(UB) = $UB, numCuts = ", num_cuts, " TOTAL T: ", totT)
+    return LB, UB, totT, num_cuts, length(lbSols), solvedSols, postTime #, num_second_stage_vars, RNtime, solveTMP, solveTSP, xVal
 
 end
 
