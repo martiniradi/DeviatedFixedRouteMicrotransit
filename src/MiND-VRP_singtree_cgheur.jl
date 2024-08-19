@@ -54,27 +54,31 @@ Get trial info, initialize IO
 """
 function parse_trial_info(trial_id::Int)
     # args
-    s = ArgParseSettings()
-    @add_arg_table! s begin
-        # "--trial_id", "-t"
-        #     help = "trial ID"
-        #     arg_type = Int
-        #     required = true
-        "--output_dir", "-o"
-            help = "output directory"
-            arg_type = String
-            required = true
-        "--trial_fn", "-f"
-            help = "trials filename"
-            arg_type = String
-            required = true
-    end
-    args = parse_args(s)
+    # s = ArgParseSettings()
+    # @add_arg_table! s begin
+    #     # "--trial_id", "-t"
+    #     #     help = "trial ID"
+    #     #     arg_type = Int
+    #     #     required = true
+    #     "--output_dir", "-o"
+    #         help = "output directory"
+    #         arg_type = String
+    #         required = true
+    #     "--trial_fn", "-f"
+    #         help = "trials filename"
+    #         arg_type = String
+    #         required = true
+    # end
+    # args = parse_args(s)
 
     # trial attributes
     # trial_id = args["trial_id"]
-    output_dir = joinpath(get_data_path(), "output", args["output_dir"])
-    trials = CSV.read(joinpath(output_dir, args["trial_fn"]), DataFrame)
+    # output_dir = joinpath(get_data_path(), "output", args["output_dir"])
+    #TODO: Fix hard-coded values!
+    output_dir = joinpath(get_data_path(), "output")
+    # trials = CSV.read(joinpath(output_dir, args["trial_fn"]), DataFrame)
+    #TODO: Fix hard-coded values!
+    trials = CSV.read(joinpath(output_dir, "trials_MiND-VRP.csv"), DataFrame)
     trial_info = first(eachrow(filter(row -> row[:trial_id] == trial_id, trials)))
     
     num_lines = Int(trial_info[:num_lines])
@@ -92,26 +96,26 @@ end
 
 function main()
     # Grab the arguments that are passed in
-    # task_id = parse(Int,ARGS[1])
-    # num_tasks = parse(Int,ARGS[2])
-    s = ArgParseSettings()
-    @add_arg_table! s begin
-        # "--trial_id", "-t"
-        #     help = "trial ID"
-        #     arg_type = Int
-        #     required = true
-        "--task_id", "-t"
-            help = "task_id"
-            arg_type = Int
-            required = true
-        "--num_tasks", "-n"
-            help = "num_tasks"
-            arg_type = Int
-            required = true
-    end
-    args = parse_args(s)
-    task_id = args["task_id"]
-    num_tasks = args["num_tasks"]
+    task_id = parse(Int,ARGS[1])
+    num_tasks = parse(Int,ARGS[2])
+    # s = ArgParseSettings()
+    # @add_arg_table! s begin
+    #     # "--trial_id", "-t"
+    #     #     help = "trial ID"
+    #     #     arg_type = Int
+    #     #     required = true
+    #     "--task_id", "-t"
+    #         help = "task_id"
+    #         arg_type = Int
+    #         required = true
+    #     "--num_tasks", "-n"
+    #         help = "num_tasks"
+    #         arg_type = Int
+    #         required = true
+    # end
+    # args = parse_args(s)
+    # task_id = args["task_id"]
+    # num_tasks = args["num_tasks"]
 
     #TODO: Fix. Must not be hardcoded
     total_num_tasks = 72
