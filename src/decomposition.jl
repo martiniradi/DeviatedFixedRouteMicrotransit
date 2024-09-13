@@ -164,9 +164,9 @@ function firstStageRelaxedModel(
 
     JuMP.@variables m begin
         # if passenger p is assigned to trip (l,t) in scenario s
-        z[s in 1:numS, p in eachindex(Demand[s]), (l,t) in Demand[s][p].candidateTrips] >= 0, upper_bound = 1.                             
+        0 <= z[s in 1:numS, p in eachindex(Demand[s]), (l,t) in Demand[s][p].candidateTrips] <= 1                             
         # if line l operates at frequency t
-        x[l in 1:numL, eachindex(R.Lines[l].freq)] >= 0, upper_bound = 1.
+        0 <= x[l in 1:numL, eachindex(R.Lines[l].freq)] <= 1
         # recourse for line l, freq t, and scenario s
         theta[l in 1:numL, eachindex(R.Lines[l].freq), 1:numS]
     end
